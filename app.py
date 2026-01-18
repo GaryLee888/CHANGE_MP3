@@ -9,8 +9,9 @@ st.set_page_config(page_title="YouTube Pro Web", page_icon="🎵", layout="wide"
 st.title("🎵 YouTube Pro 音樂下載器 (Web 版)")
 st.info("提示：分析完成後，請勾選要下載的項目，再點擊開始下載。")
 
-# --- 1. 核心初始化 (確保 state 絕對不為 None) ---
-if 'items' not in st.session_state:
+# --- 1. 確保 Session State 始終存在且不為 None ---
+# 這是為了解決截圖中的 enumerate 報錯
+if 'items' not in st.session_state or st.session_state.items is None:
     st.session_state.items = []
 if 'mode' not in st.session_state:
     st.session_state.mode = None
@@ -18,7 +19,7 @@ if 'current_url' not in st.session_state:
     st.session_state.current_url = ""
 
 # --- 2. 輸入區 ---
-url_input = st.text_input("貼上 YouTube 網址:", value=st.session_state.current_url, placeholder="https://www.youtube.com/watch?v=...")
+url_input = st.text_input("貼上 YouTube 網址:", placeholder="https://www.youtube.com/watch?v=...")
 
 col1, col2 = st.columns([1, 4])
 with col1:
@@ -26,12 +27,12 @@ with col1:
 with col2:
     add_number = st.checkbox("檔名加入序號 (01, 02...)", value=True)
 
-# --- 3. 分析邏輯 ---
+# --- 3. 分析邏輯 (徹底解決 method has no len 報錯) ---
 if analyze_btn:
     if not url_input:
         st.warning("請先輸入網址")
     else:
-        # 點擊分析時先重置狀態，避免舊數據干擾
+        # 重置狀態
         st.session_state.items = []
         st.session_state.current_url = url_input
         
@@ -46,68 +47,73 @@ if analyze_btn:
                 }
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # 抓取資訊
-                    info_dict = ydl.extract_info(url_input, download=False)
+                    # 抓取原始資料
+                    info = ydl.extract_info(url_input, download=False)
                     
-                    if info_dict is None:
-                        st.error("無法取得影片資訊，請檢查網址或稍後再試。")
+                    if info is None:
+                        st.error("無法抓取資訊，請檢查網址或稍後再試。")
                     else:
-                        # 判定模式並提取清單
-                        if 'entries' in info_dict:
+                        # 邏輯分流：播放清單 -> 影片章節 -> 單影片
+                        if 'entries' in info:
                             st.session_state.mode = 'playlist'
-                            # 過濾掉可能為 None 的 entry
-                            st.session_state.items = [e for e in info_dict['entries'] if e is not None]
-                        elif info_dict.get('chapters'):
+                            # 確保 entries 是 list 並過濾 None
+                            entries = list(info.get('entries', []))
+                            st.session_state.items = [e for e in entries if e is not None]
+                        elif info.get('chapters'):
                             st.session_state.mode = 'chapters'
-                            st.session_state.items = list(info_dict['chapters'])
+                            st.session_state.items = list(info['chapters'])
                         else:
                             st.session_state.mode = 'single'
-                            # 確保放入的是一個包含單一 dict 的 list
-                            st.session_state.items = [info_dict]
+                            # 建立一個單元素的清單，避免後續遍歷報錯
+                            st.session_state.items = [dict(info)]
                 
-                if not st.session_state.items:
-                    st.warning("分析完成，但未找到任何可下載的曲目。")
+                # 再次確認是否有抓到東西
+                item_count = len(st.session_state.items)
+                if item_count > 0:
+                    st.success(f"分析完成！找到 {item_count} 個項目")
                 else:
-                    st.success(f"分析完成！找到 {len(st.session_state.items)} 個項目")
+                    st.warning("分析完成，但未找到可下載的內容。")
                     
             except Exception as e:
-                st.session_state.items = [] # 發生錯誤時清空
+                st.session_state.items = []
                 st.error(f"分析失敗: {str(e)}")
 
-# --- 4. 顯示與選擇區 (加強防禦性判斷) ---
-# 只有當 items 是清單且有內容時才執行
+# --- 4. 顯示與選擇區 (防禦性遍歷) ---
+# 確保 current_items 是一個可以被 enumerate 的 list
 current_items = st.session_state.get('items', [])
 
 if isinstance(current_items, list) and len(current_items) > 0:
     st.markdown("---")
     st.subheader("2. 選擇下載項目")
     
-    display_options = []
+    # 建立顯示用的選項
+    display_list = []
     for i, item in enumerate(current_items, 1):
-        # 嘗試抓取標題，若無則顯示序號
-        title = "未知曲目"
         if isinstance(item, dict):
-            title = item.get('title') or item.get('section_title') or f"項目 {i}"
-        display_options.append(f"{i:02d}. {title}")
+            # 優先嘗試不同的標題 key
+            t = item.get('title') or item.get('section_title') or f"項目 {i}"
+            display_list.append(f"{i:02d}. {t}")
+        else:
+            display_list.append(f"{i:02d}. 未知曲目")
     
-    selected_options = st.multiselect("請勾選項目 (預設為全選):", display_options)
+    selected_options = st.multiselect("請勾選項目 (預設為全選):", display_list)
     
-    # 決定要下載的索引
+    # 提取選中的索引
     if selected_options:
         target_indices = [int(opt.split('.')[0]) for opt in selected_options]
     else:
         target_indices = list(range(1, len(current_items) + 1))
 
-    # --- 5. 下載區 ---
+    # --- 5. 下載執行區 ---
     if st.button("🚀 開始下載為 MP3", type="primary"):
-        dl_folder = "web_downloads"
-        if os.path.exists(dl_folder):
-            shutil.rmtree(dl_folder)
-        os.makedirs(dl_folder)
+        temp_dir = "downloads_workdir"
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir)
 
-        with st.status("正在處理下載工作...", expanded=True) as status:
+        with st.status("正在處理並轉換檔案...", expanded=True) as status:
             try:
-                base_ydl_opts = {
+                base_opts = {
                     'format': 'bestaudio/best',
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
@@ -119,42 +125,40 @@ if isinstance(current_items, list) and len(current_items) > 0:
                 }
 
                 if st.session_state.mode == 'playlist':
-                    base_ydl_opts['playlist_items'] = ",".join(map(str, target_indices))
+                    base_opts['playlist_items'] = ",".join(map(str, target_indices))
                     prefix = "%(playlist_index)02d." if add_number else ""
-                    base_ydl_opts['outtmpl'] = f'{dl_folder}/{prefix}%(title)s.%(ext)s'
-                
+                    base_opts['outtmpl'] = f'{temp_dir}/{prefix}%(title)s.%(ext)s'
                 elif st.session_state.mode == 'chapters':
-                    idx_pattern = f"^({'|'.join([str(x) for x in target_indices])})$"
-                    base_ydl_opts['download_sections'] = f'*{idx_pattern}'
+                    indices_str = "|".join([str(x) for x in target_indices])
+                    base_opts['download_sections'] = f'*^({indices_str})$'
                     prefix = "%(section_number)02d." if add_number else ""
-                    base_ydl_opts['outtmpl'] = f'{dl_folder}/{prefix}%(section_title)s.%(ext)s'
-                    base_ydl_opts['postprocessors'].insert(0, {'key': 'FFmpegSplitChapters', 'force_keyframes': False})
-                
-                else: # single video
+                    base_opts['outtmpl'] = f'{temp_dir}/{prefix}%(section_title)s.%(ext)s'
+                    base_opts['postprocessors'].insert(0, {'key': 'FFmpegSplitChapters', 'force_keyframes': False})
+                else:
                     prefix = "01." if add_number else ""
-                    base_ydl_opts['outtmpl'] = f'{dl_folder}/{prefix}%(title)s.%(ext)s'
+                    base_opts['outtmpl'] = f'{temp_dir}/{prefix}%(title)s.%(ext)s'
 
-                with yt_dlp.YoutubeDL(base_ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(base_opts) as ydl:
                     ydl.download([st.session_state.current_url])
                 
-                status.update(label="✅ 處理完成！", state="complete")
+                status.update(label="✅ 下載完成！", state="complete")
                 
-                # 取得結果檔案
-                files_found = os.listdir(dl_folder)
-                if files_found:
+                # 生成下載按鈕
+                result_files = os.listdir(temp_dir)
+                if result_files:
                     st.balloons()
-                    st.markdown("### 3. 下載到您的電腦")
-                    for filename in files_found:
-                        f_path = os.path.join(dl_folder, filename)
-                        with open(f_path, "rb") as f_bytes:
+                    st.markdown("### 3. 下載到本地裝置")
+                    for fname in result_files:
+                        full_p = os.path.join(temp_dir, fname)
+                        with open(full_p, "rb") as fb:
                             st.download_button(
-                                label=f"💾 點我儲存：{filename}",
-                                data=f_bytes,
-                                file_name=filename,
+                                label=f"💾 儲存：{fname}",
+                                data=fb,
+                                file_name=fname,
                                 mime="audio/mp3",
-                                key=f"btn_{filename}"
+                                key=f"dl_btn_{fname}" # 唯一金鑰
                             )
                 else:
-                    st.error("下載失敗：找不到生成的 MP3 檔案。")
+                    st.error("未能產生 MP3 檔案，請檢查影片是否有地區限制。")
             except Exception as e:
-                st.error(f"下載過程出錯: {e}")
+                st.error(f"下載失敗: {e}")

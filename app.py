@@ -2,21 +2,29 @@ import streamlit as st
 import yt_dlp
 import os
 import shutil
+import json
 
 # --- 網頁配置 ---
-st.set_page_config(page_title="YouTube Pro Web", page_icon="🎵", layout="wide")
+st.set_page_config(page_title="YouTube Pro Web (偵錯強化版)", page_icon="🎵", layout="wide")
 
-st.title("🎵 YouTube Pro 音樂下載器 (Web 版)")
-st.info("提示：分析完成後，請勾選要下載的項目，再點擊開始下載。")
+st.title("🎵 YouTube Pro 音樂下載器 (偵錯強化版)")
 
-# --- 1. 核心初始化 (防禦 TypeError) ---
-# 確保這些變數永遠存在，且 items 預設為空清單而非 None
-if 'items' not in st.session_state:
+# --- 側邊欄：偵錯功能切換 ---
+st.sidebar.title("🛠 系統工具")
+debug_mode = st.sidebar.checkbox("開啟偵錯顯示 (Debug Mode)", value=False)
+if st.sidebar.button("🧹 強制重置 Session"):
+    st.session_state.clear()
+    st.rerun()
+
+# --- 1. 核心初始化 ---
+if 'items' not in st.session_state or st.session_state.items is None:
     st.session_state.items = []
 if 'mode' not in st.session_state:
     st.session_state.mode = None
 if 'current_url' not in st.session_state:
     st.session_state.current_url = ""
+if 'raw_info' not in st.session_state:
+    st.session_state.raw_info = {}
 
 # --- 2. 輸入區 ---
 url_input = st.text_input("貼上 YouTube 網址:", value=st.session_state.current_url, placeholder="https://www.youtube.com/watch?v=...")
@@ -27,12 +35,11 @@ with col1:
 with col2:
     add_number = st.checkbox("檔名加入序號 (01, 02...)", value=True)
 
-# --- 3. 分析邏輯 (解決 method has no len 報錯) ---
+# --- 3. 分析邏輯 ---
 if analyze_btn:
     if not url_input:
         st.warning("請先輸入網址")
     else:
-        # 重置狀態
         st.session_state.items = []
         st.session_state.current_url = url_input
         
@@ -47,17 +54,16 @@ if analyze_btn:
                 }
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # 抓取原始資料
                     info = ydl.extract_info(url_input, download=False)
                     
                     if info is None:
                         st.error("無法抓取資訊，請檢查網址或稍後再試。")
                     else:
-                        # 判定資料型態並安全賦值
-                        # 注意：這裡使用 get('entries') 獲取資料，而非呼叫同名的 method
+                        # 儲存原始資料供偵錯使用
+                        st.session_state.raw_info = info
+                        
                         if 'entries' in info:
                             st.session_state.mode = 'playlist'
-                            # 強制轉為 list 並過濾 None
                             raw_entries = list(info.get('entries', []))
                             st.session_state.items = [e for e in raw_entries if e is not None]
                         elif info.get('chapters'):
@@ -65,31 +71,43 @@ if analyze_btn:
                             st.session_state.items = list(info['chapters'])
                         else:
                             st.session_state.mode = 'single'
-                            # 將單個 info 包裝成 list 中的 dict
                             st.session_state.items = [dict(info)]
                 
-                # 使用變數存儲長度，確保 len() 作用在 list 對象上
-                final_count = len(st.session_state.items)
-                if final_count > 0:
-                    st.success(f"分析完成！找到 {final_count} 個項目")
-                else:
-                    st.warning("分析完成，但未找到可下載內容。")
+                st.success(f"分析完成！找到 {len(st.session_state.items)} 個項目")
                     
             except Exception as e:
                 st.session_state.items = []
                 st.error(f"分析失敗: {str(e)}")
 
-# --- 4. 顯示與選擇區 (加強防禦性遍歷) ---
-# 再次確認 current_items 是清單，避免畫面崩潰
+# --- 4. 偵錯顯示區 (Debug Mode) ---
+if debug_mode:
+    st.divider()
+    st.subheader("🐞 偵錯資訊面板")
+    d_col1, d_col2 = st.columns(2)
+    with d_col1:
+        st.write("**Session State 狀態:**")
+        st.json({
+            "mode": st.session_state.mode,
+            "url": st.session_state.current_url,
+            "items_count": len(st.session_state.items) if isinstance(st.session_state.items, list) else "Not a list"
+        })
+    with d_col2:
+        st.write("**原始資料結構節錄 (raw_info):**")
+        if st.session_state.raw_info:
+            # 只顯示前 1000 個字元避免網頁卡頓
+            st.code(str(st.session_state.raw_info)[:1000] + "...")
+        else:
+            st.write("尚無資料")
+    st.divider()
+
+# --- 5. 顯示與選擇區 ---
 current_items = st.session_state.get('items', [])
 
 if isinstance(current_items, list) and len(current_items) > 0:
-    st.markdown("---")
     st.subheader("2. 選擇下載項目")
     
     display_names = []
     for i, item in enumerate(current_items, 1):
-        # 確保 item 是字典，並安全取得標題
         title = "未知曲目"
         if isinstance(item, dict):
             title = item.get('title') or item.get('section_title') or f"項目 {i}"
@@ -97,13 +115,12 @@ if isinstance(current_items, list) and len(current_items) > 0:
     
     selected_list = st.multiselect("請勾選項目 (不選代表下載全部):", display_names)
     
-    # 轉換選中的索引
     if selected_list:
         target_indices = [int(opt.split('.')[0]) for opt in selected_list]
     else:
         target_indices = list(range(1, len(current_items) + 1))
 
-    # --- 5. 下載執行區 ---
+    # --- 6. 下載執行區 ---
     if st.button("🚀 開始下載為 MP3", type="primary"):
         work_dir = "temp_dl_dir"
         if os.path.exists(work_dir):
@@ -154,7 +171,7 @@ if isinstance(current_items, list) and len(current_items) > 0:
                                 data=file_bytes,
                                 file_name=f,
                                 mime="audio/mp3",
-                                key=f"btn_{f}" # 確保每個按鈕 key 唯一
+                                key=f"btn_{f}"
                             )
                 else:
                     st.error("未能產生檔案，請確認網址是否受限。")

@@ -2,11 +2,14 @@ import streamlit as st
 import yt_dlp
 import os
 import shutil
+import zipfile
+from io import BytesIO
 
 # --- 網頁配置 ---
-st.set_page_config(page_title="YouTube Pro Web (穩定修復版)", page_icon="🎵", layout="wide")
+st.set_page_config(page_title="YouTube Pro Web (打包增強版)", page_icon="🎵", layout="wide")
 
-st.title("🎵 YouTube Pro 音樂下載器 (穩定版)")
+st.title("🎵 YouTube Pro 音樂下載器 (Web 版)")
+st.info("💡 註：網頁版會下載到您瀏覽器的預設下載位置。")
 
 # --- 側邊欄工具 ---
 st.sidebar.title("🛠 系統工具")
@@ -15,7 +18,7 @@ if st.sidebar.button("🧹 強制清空暫存"):
     st.session_state.clear()
     st.rerun()
 
-# --- 1. 核心初始化 (使用新變數名避開衝突) ---
+# --- 1. 核心初始化 ---
 if 'download_list' not in st.session_state:
     st.session_state.download_list = []
 if 'app_mode' not in st.session_state:
@@ -32,12 +35,11 @@ with col1:
 with col2:
     add_number = st.checkbox("檔名加入序號 (01, 02...)", value=True)
 
-# --- 3. 分析邏輯 (強化型別判定) ---
+# --- 3. 分析邏輯 ---
 if analyze_btn:
     if not url_input:
         st.warning("請輸入網址")
     else:
-        # 重置清單
         st.session_state.download_list = []
         st.session_state.active_url = url_input
         
@@ -52,19 +54,14 @@ if analyze_btn:
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url_input, download=False)
-                    
                     if info:
-                        # 處理播放清單
                         if 'entries' in info:
                             st.session_state.app_mode = 'playlist'
-                            # 關鍵：強制轉換為 list 確保不是 method
                             entries_data = list(info.get('entries', []))
                             st.session_state.download_list = [e for e in entries_data if e is not None]
-                        # 處理章節
                         elif info.get('chapters'):
                             st.session_state.app_mode = 'chapters'
                             st.session_state.download_list = list(info['chapters'])
-                        # 處理單影片
                         else:
                             st.session_state.app_mode = 'single'
                             st.session_state.download_list = [dict(info)]
@@ -73,39 +70,25 @@ if analyze_btn:
             except Exception as e:
                 st.error(f"分析失敗: {str(e)}")
 
-# --- 4. 偵錯面板 ---
-if debug_mode:
-    with st.expander("🐞 偵錯資料結構", expanded=True):
-        st.write(f"目前模式: {st.session_state.app_mode}")
-        st.write(f"列表型別: {type(st.session_state.download_list)}")
-        st.json(st.session_state.download_list[:2]) # 只顯示前兩筆避免卡頓
-
-# --- 5. 顯示與選擇區 ---
-if isinstance(st.session_state.download_list, list) and len(st.session_state.download_list) > 0:
+# --- 4. 顯示與選擇區 ---
+if st.session_state.download_list:
     st.divider()
     st.subheader("2. 選擇下載項目")
     
-    display_options = []
-    for i, item in enumerate(st.session_state.download_list, 1):
-        title = "未知曲目"
-        if isinstance(item, dict):
-            title = item.get('title') or item.get('section_title') or f"項目 {i}"
-        display_options.append(f"{i:02d}. {title}")
+    display_options = [f"{i+1:02d}. {item.get('title') or item.get('section_title') or '未知'}" 
+                       for i, item in enumerate(st.session_state.download_list)]
     
     selected = st.multiselect("勾選項目 (不選代表全下):", display_options)
     
-    if selected:
-        indices = [int(opt.split('.')[0]) for opt in selected]
-    else:
-        indices = list(range(1, len(st.session_state.download_list) + 1))
+    indices = [int(opt.split('.')[0]) for opt in selected] if selected else list(range(1, len(st.session_state.download_list) + 1))
 
-    # --- 6. 下載區 ---
-    if st.button("🚀 開始下載 MP3", type="primary"):
+    # --- 5. 下載執行區 ---
+    if st.button("🚀 開始下載並轉檔為 MP3", type="primary"):
         save_dir = "web_out"
         if os.path.exists(save_dir): shutil.rmtree(save_dir)
         os.makedirs(save_dir)
 
-        with st.status("轉檔中...", expanded=True) as status:
+        with st.status("正在下載轉換中，請稍候...", expanded=True) as status:
             try:
                 dl_opts = {
                     'format': 'bestaudio/best',
@@ -129,13 +112,41 @@ if isinstance(st.session_state.download_list, list) and len(st.session_state.dow
                 with yt_dlp.YoutubeDL(dl_opts) as ydl:
                     ydl.download([st.session_state.active_url])
                 
-                status.update(label="✅ 下載完成！", state="complete")
+                status.update(label="✅ 轉檔完成！", state="complete")
                 
                 res_files = os.listdir(save_dir)
                 if res_files:
                     st.balloons()
-                    for fn in res_files:
-                        with open(os.path.join(save_dir, fn), "rb") as f:
-                            st.download_button(label=f"💾 儲存：{fn}", data=f, file_name=fn, mime="audio/mp3", key=fn)
+                    st.success("檔案已準備就緒！")
+                    
+                    # --- 加入打包 ZIP 邏輯 ---
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w") as zf:
+                        for fn in res_files:
+                            zf.write(os.path.join(save_dir, fn), fn)
+                    
+                    st.markdown("### 3. 下載檔案")
+                    col_dl1, col_dl2 = st.columns(2)
+                    
+                    with col_dl1:
+                        st.download_button(
+                            label="🎁 下載全部項目 (ZIP 壓縮檔)",
+                            data=zip_buffer.getvalue(),
+                            file_name="youtube_music_pack.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
+                    
+                    with col_dl2:
+                        with st.expander("個別檔案下載"):
+                            for fn in res_files:
+                                with open(os.path.join(save_dir, fn), "rb") as f:
+                                    st.download_button(label=f"🎵 {fn}", data=f, file_name=fn, mime="audio/mp3", key=fn)
+                else:
+                    st.error("未能產生檔案，請檢查影片是否有地區限制或版權保護。")
             except Exception as e:
                 st.error(f"下載失敗: {e}")
+
+# 偵錯模式
+if debug_mode:
+    st.write("Debug Data:", st.session_state.download_list[:2])

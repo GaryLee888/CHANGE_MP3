@@ -54,6 +54,7 @@ if analyze_btn:
                         st.error("無法抓取資訊，請檢查網址或稍後再試。")
                     else:
                         # 判定資料型態並安全賦值
+                        # 注意：這裡使用 get('entries') 獲取資料，而非呼叫同名的 method
                         if 'entries' in info:
                             st.session_state.mode = 'playlist'
                             # 強制轉為 list 並過濾 None
@@ -67,7 +68,7 @@ if analyze_btn:
                             # 將單個 info 包裝成 list 中的 dict
                             st.session_state.items = [dict(info)]
                 
-                # 使用變數存儲長度，避免直接在判斷式中呼叫可能出錯的屬性
+                # 使用變數存儲長度，確保 len() 作用在 list 對象上
                 final_count = len(st.session_state.items)
                 if final_count > 0:
                     st.success(f"分析完成！找到 {final_count} 個項目")
@@ -79,7 +80,7 @@ if analyze_btn:
                 st.error(f"分析失敗: {str(e)}")
 
 # --- 4. 顯示與選擇區 (加強防禦性遍歷) ---
-# 再次確認 current_items 是清單
+# 再次確認 current_items 是清單，避免畫面崩潰
 current_items = st.session_state.get('items', [])
 
 if isinstance(current_items, list) and len(current_items) > 0:

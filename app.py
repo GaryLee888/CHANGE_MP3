@@ -9,6 +9,7 @@ from io import BytesIO
 st.set_page_config(page_title="YouTube Pro Web (穩定修復版)", page_icon="🎵", layout="wide")
 
 st.title("🎵 YouTube Pro 音樂下載器 (穩定版)")
+st.info("💡 註：網頁版會下載到您瀏覽器的預設下載位置。")
 
 # --- 側邊欄工具 ---
 st.sidebar.title("🛠 系統工具")
@@ -16,7 +17,7 @@ if st.sidebar.button("🧹 強制重置 Session"):
     st.session_state.clear()
     st.rerun()
 
-# --- 1. 核心初始化 (更名避開 method 衝突) ---
+# --- 1. 核心初始化 (避開 method 名稱衝突) ---
 if 'entry_list' not in st.session_state:
     st.session_state.entry_list = []
 if 'app_mode' not in st.session_state:
@@ -25,7 +26,7 @@ if 'active_url' not in st.session_state:
     st.session_state.active_url = ""
 
 # --- 2. 輸入區 ---
-url_input = st.text_input("貼上 YouTube 網址:", value=st.session_state.active_url)
+url_input = st.text_input("貼上 YouTube 網址:", value=st.session_state.active_url, placeholder="https://www.youtube.com/watch?v=...")
 
 col1, col2 = st.columns([1, 4])
 with col1:
@@ -36,20 +37,14 @@ with col2:
 # --- 3. 分析邏輯 ---
 if analyze_btn:
     if not url_input:
-        st.warning("請輸入網址")
+        st.warning("請先輸入網址")
     else:
-        st.session_state.entry_list = [] # 確保重置為 list
+        st.session_state.entry_list = [] 
         st.session_state.active_url = url_input
         
         with st.spinner("正在解析 YouTube 資訊..."):
             try:
-                ydl_opts = {
-                    'quiet': True, 
-                    'extract_flat': 'in_playlist', 
-                    'ignoreerrors': True, 
-                    'no_warnings': True,
-                }
-                
+                ydl_opts = {'quiet': True, 'extract_flat': 'in_playlist', 'ignoreerrors': True, 'no_warnings': True}
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url_input, download=False)
                     if info:
@@ -76,13 +71,10 @@ if isinstance(st.session_state.entry_list, list) and len(st.session_state.entry_
     st.divider()
     st.subheader("2. 選擇下載項目")
     
-    display_options = []
-    for i, item in enumerate(st.session_state.entry_list, 1):
-        title = item.get('title') or item.get('section_title') or f"項目 {i}"
-        display_options.append(f"{i:02d}. {title}")
+    display_options = [f"{i+1:02d}. {item.get('title') or item.get('section_title') or '未知'}" 
+                       for i, item in enumerate(st.session_state.entry_list)]
     
     selected = st.multiselect("勾選項目 (不選代表下載全部):", display_options)
-    
     indices = [int(opt.split('.')[0]) for opt in selected] if selected else list(range(1, len(st.session_state.entry_list) + 1))
 
     # --- 5. 下載執行區 ---
@@ -121,6 +113,7 @@ if isinstance(st.session_state.entry_list, list) and len(st.session_state.entry_
                     status.update(label="✅ 轉檔完成！", state="complete")
                     st.balloons()
                     
+                    # 打包 ZIP
                     zip_buffer = BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w") as zf:
                         for fn in res_files:
@@ -135,6 +128,6 @@ if isinstance(st.session_state.entry_list, list) and len(st.session_state.entry_
                     )
                 else:
                     status.update(label="❌ 下載失敗", state="error")
-                    st.error("未能產生檔案。原因可能是：影片受版權保護、地區限制，或 YouTube 封鎖了伺服器 IP。")
+                    st.error("未能產生檔案。原因：影片不可用（版權/地區限制）或伺服器 IP 被封鎖。")
             except Exception as e:
-                st.error(f"下載過程出錯: {e}")
+                st.error(f"下載失敗: {e}")
